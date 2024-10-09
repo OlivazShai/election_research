@@ -1,0 +1,10 @@
+---
+title: "Importing election data"
+author: "Shai Vaz"
+date: "2024-10-09"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
