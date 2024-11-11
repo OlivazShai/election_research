@@ -8,3 +8,200 @@ output: pdf_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
+
+```{r, include=FALSE}
+# Data Wrangling
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(readr)
+
+# Graphics
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+
+# Electoral
+library(electionsBR)
+```
+
+# Download local election data
+
+For now, I will look at the 2020 local elections in Rio de Janeiro.
+
+## Candidate results by zone
+
+```{r}
+results <- elections_tse(
+  year = 2020,
+  type = "vote_mun_zone",
+  uf = "RJ",
+  readme_pdf = T
+)
+```
+```{r}
+results_rio <- results |> 
+  filter(
+    # Rio de Janeiro
+    CD_MUNICIPIO == 60011,
+    # Vereador
+    CD_CARGO == 13
+  ) |> 
+  select(
+    zone = NR_ZONA,
+    cand_id = SQ_CANDIDATO,
+    cand_num = NR_CANDIDATO,
+    cand_name = NM_CANDIDATO,
+    cand_poll_name = NM_URNA_CANDIDATO,
+    party_num = NR_PARTIDO,
+    party_accr = SG_PARTIDO,
+    party_name = NM_PARTIDO,
+    votes = QT_VOTOS_NOMINAIS_VALIDOS,
+    situ_code = CD_SIT_TOT_TURNO,
+    situ_desc = DS_SIT_TOT_TURNO
+  )
+```
+
+
+
+## Calculations
+
+```{r}
+candidates_by_party <- results_rio |>
+  # Sum votes by candidate across zones
+  mutate(
+    .by = cand_id,
+    total_votes = sum(votes, na.rm = TRUE)
+  ) |>
+  # Remove the 'zone' column and original 'votes' column
+  select(
+    -c(zone, votes)
+    ) |>
+  # Remove duplicated rows to keep only unique candidates with their total votes
+  distinct() |>
+  # Group by party and calculate party-level summaries
+  mutate(
+    .by = party_accr,
+    party_vote = sum(total_votes, na.rm = TRUE),
+    share = total_votes / party_vote,
+    eff_in_party = 1 / sum(share^2, na.rm = TRUE),
+    # Rank candidates within each party by total votes
+    rank_in_party = rank(-total_votes, ties.method = "min"),
+    viable = if_else(
+      rank_in_party <= ceiling(eff_in_party),
+      TRUE, FALSE
+    )
+  )
+```
+
+
+```{r}
+# the same, by electoral zone
+candidates_by_zone <- results_rio |>
+  mutate(
+    .by = zone,
+    
+    zone_vote = sum(votes, na.rm = TRUE),
+    
+    share = votes / zone_vote,
+    
+    eff_in_zone = 1 / sum(share^2, na.rm = TRUE),
+    
+    # Rank candidates within each zone by votes
+    rank_in_zone = rank(-votes, ties.method = "min"),
+    
+    # Identify associates
+    associate = if_else(
+      rank_in_zone <= ceiling(eff_in_zone), 
+      TRUE, FALSE
+      )
+  )
+```
+
+## Join and check intermediates
+
+```{r}
+cand_viable_associate <- left_join(
+  candidates_by_zone,
+  
+  candidates_by_party |> 
+    select(
+      cand_id, eff_in_party, rank_in_party, viable
+      ),
+  by = "cand_id"
+  ) |> 
+  mutate(
+    intermediate = if_else(associate == TRUE & viable == FALSE, TRUE, FALSE)
+  )
+```
+
+
+## Statistics
+
+Get the number of effective candidates by party
+
+```{r}
+cand_viable_associate |> 
+  summarise(
+    Parties = n_distinct(party_num),
+    Candidates = n_distinct(cand_id),
+    Zones = n_distinct(zone),
+  ) 
+```
+
+
+```{r}
+a <- cand_viable_associate |> 
+  filter(situ_code ==2 | situ_code == 3) |> 
+  summarise(
+    "Type" = "Elected",
+    "Number" = n_distinct(cand_id),
+    "Mean Rank in party" = mean(rank_in_party),
+    "Min rank in party" = min(rank_in_party),
+    "Max rank in party" = max(rank_in_party),
+    "Max share in zone (%)" = max(share)*100
+  ) 
+
+b <- cand_viable_associate |> 
+  filter(
+    viable & situ_code != 2 & situ_code != 3
+  ) |> 
+  summarise(
+    "Type" = "Unelected Viable",
+    "Number" = n_distinct(cand_id),
+    "Mean Rank in party" = mean(rank_in_party),
+    "Min rank in party" = min(rank_in_party),
+    "Max rank in party" = max(rank_in_party),
+    "Max share in zone (%)" = max(share)*100
+  )
+
+c <- cand_viable_associate |> 
+  filter(intermediate) |> 
+  summarise(
+    "Type" = "Intermediate",
+    "Number" = n_distinct(cand_id),
+    "Mean Rank in party" = mean(rank_in_party),
+    "Min rank in party" = min(rank_in_party),
+    "Max rank in party" = max(rank_in_party),
+    "Max share in zone (%)" = max(share)*100
+  )
+
+bind_rows(
+  a, b, c
+  ) |> 
+  pivot_longer(cols = -Type, names_to = "Metric", values_to = "Value")  |> 
+  pivot_wider(names_from = Type, values_from = Value)  |> 
+  tibble::column_to_rownames("Metric") |> 
+  kable(
+    format = 'latex',
+    row.names = TRUE,
+    digits = 2
+  ) |>
+  add_header_above(c("Candidate statistics" = 4)) |>
+  kable_styling(latex_options = "hold_position") |> 
+  cat()
+
+```
+
+
